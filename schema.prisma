@@ -1,0 +1,183 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role { MANUFACTURER MRO AIRLINE INSPECTOR ADMIN }
+enum ComponentState {
+  REGISTERED IN_SERVICE AWAITING_INSPECTION INSPECTED ON_CHAIN_UPDATED
+  INSTALLATION_ELIGIBLE INSTALLATION_BLOCKED INSTALLED QUARANTINED DECOMMISSIONED
+}
+enum MaintenanceType { INSPECTION OVERHAUL REPAIR }
+enum MaintenanceStatus { AWAITING_INSPECTION APPROVED REJECTED QUARANTINED }
+enum SignatureStatus { UNSIGNED VERIFIED INVALID }
+enum AttestationDecision { APPROVE REJECT QUARANTINE }
+enum ComplianceDecision { ALLOW BLOCK REVIEW_REQUIRED }
+enum ChainMode { SIMULATED DEVNET }
+enum ChainStatus { SIMULATED CONFIRMED FAILED }
+enum ChainTxKind { ANCHOR MINT }
+enum RegistryStatus { NOT_REGISTERED SIMULATED REGISTERED_ONCHAIN }
+
+model Agent {
+  id             String         @id @default(cuid())
+  agentCode      String         @unique
+  name           String
+  role           Role
+  organization   String
+  authorized     Boolean        @default(true)
+  walletAddress  String?
+  registryStatus RegistryStatus @default(NOT_REGISTERED)
+  registryRef    String?        // on-chain evidence (tx signature / account) - only set when verified
+  createdAt      DateTime       @default(now())
+  users          User[]
+  maintenance    MaintenanceRecord[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  role      Role
+  active    Boolean  @default(true)
+  agentId   String?
+  agent     Agent?   @relation(fields: [agentId], references: [id])
+  createdAt DateTime @default(now())
+  attestations Attestation[]
+}
+
+model Component {
+  id              String         @id // human readable, e.g. COMP-ONYX-001
+  name            String
+  partNumber      String
+  serialNumber    String         @unique
+  manufacturer    String
+  certificateRef  String
+  certificateHash String
+  specs           Json?
+  state           ComponentState @default(REGISTERED)
+  flightHours     Int            @default(0)
+  mintAddress     String?        // only set after a CONFIRMED Token-2022 mint
+  registeredBy    String
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  maintenance     MaintenanceRecord[]
+  documents       Document[]
+  lifecycle       LifecycleEvent[]
+  compliance      ComplianceResult[]
+  transactions    ChainTransaction[]
+  @@index([state])
+}
+
+model MaintenanceRecord {
+  id              String            @id @default(cuid())
+  displayId       String            @unique // EVT-0001
+  componentId     String
+  component       Component         @relation(fields: [componentId], references: [id])
+  type            MaintenanceType
+  work            String
+  flightHours     Int
+  status          MaintenanceStatus @default(AWAITING_INSPECTION)
+  signatureStatus SignatureStatus   @default(UNSIGNED)
+  signerPublicKey String?
+  signature       String?
+  agentId         String
+  agent           Agent             @relation(fields: [agentId], references: [id])
+  createdAt       DateTime          @default(now())
+  documents       Document[]
+  attestations    Attestation[]
+  @@index([componentId])
+}
+
+model Document {
+  id            String             @id @default(cuid())
+  componentId   String
+  component     Component          @relation(fields: [componentId], references: [id])
+  recordId      String?
+  record        MaintenanceRecord? @relation(fields: [recordId], references: [id])
+  name          String
+  sha256        String
+  sizeBytes     Int
+  storageUri    String?            // off-chain storage abstraction key (local:// | ipfs:// | s3://)
+  createdAt     DateTime           @default(now())
+  @@index([componentId])
+}
+
+model Attestation {
+  id          String              @id @default(cuid())
+  recordId    String
+  record      MaintenanceRecord   @relation(fields: [recordId], references: [id])
+  inspectorId String
+  inspector   User                @relation(fields: [inspectorId], references: [id])
+  decision    AttestationDecision
+  notes       String
+  createdAt   DateTime            @default(now())
+}
+
+model LifecycleEvent {
+  id          String         @id @default(cuid())
+  componentId String
+  component   Component      @relation(fields: [componentId], references: [id])
+  fromState   ComponentState?
+  toState     ComponentState
+  action      String
+  actor       String
+  createdAt   DateTime       @default(now())
+  @@index([componentId])
+}
+
+model ComplianceRule {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  description String
+  severity    String
+  enabled     Boolean @default(true)
+}
+
+model ComplianceResult {
+  id              String             @id @default(cuid())
+  componentId     String
+  component       Component          @relation(fields: [componentId], references: [id])
+  decision        ComplianceDecision
+  failed          Json
+  passed          Json
+  ruleVersion     String
+  simulatedAnchor Boolean
+  evaluatedBy     String
+  createdAt       DateTime           @default(now())
+  @@index([componentId])
+}
+
+model ChainTransaction {
+  id           String      @id @default(cuid())
+  componentId  String
+  component    Component   @relation(fields: [componentId], references: [id])
+  kind         ChainTxKind
+  mode         ChainMode
+  status       ChainStatus
+  signature    String?     @unique // real Solana signature ONLY. Null for simulated/failed.
+  simulatedRef String?     // clearly-labelled local reference for SIMULATED rows
+  payloadHash  String
+  slot         Int?
+  mintAddress  String?
+  error        String?
+  createdBy    String
+  createdAt    DateTime    @default(now())
+  @@index([componentId])
+}
+
+model AuditEvent {
+  id          String   @id @default(cuid())
+  seq         Int      @unique
+  timestamp   DateTime
+  componentId String?
+  actor       String
+  action      String
+  outcome     String
+  txSignature String?
+  prevHash    String
+  entryHash   String
+}
+
